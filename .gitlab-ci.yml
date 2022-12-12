@@ -1,0 +1,235 @@
+workflow:
+  rules:
+    - if: $CI_COMMIT_TAG
+    - if: $GITLAB_USER_EMAIL == "mediasvodsupportnonprod@nielsen.com"  # Do not trigger Pipeline if commit made by service account
+      when: never
+    - if: $GITLAB_USER_EMAIL == "mediasvodsupport@nielsen.com"  # Do not trigger Pipeline if commit made by service account
+      when: never
+    - when: always # Trigger for all other cases
+
+variables:
+  VARIABLE_FILE: build.env
+  GIT_STRATEGY: clone
+  TARGET_REGION: us-east-1
+
+default:
+  tags:
+    - svod-nonprod-docker
+  image:
+    name: registry.gitlab.com/nielsen-media/eng/streaming/svod/aws-infrastructure/svod-images/svod-images:v0.0.1
+    entrypoint: [""]
+
+.before_script_deploy: &before_script_deploy
+  - |
+    echo ">>>>>>>>> before_script_deploy method >>>>>>>>>"
+
+.deploy_script_plan: &deploy_script_plan
+  - |
+    echo "Inside deploy_script_plan method"
+    ls -altr
+    echo "ACCOUNT : ${ACCOUNT}"
+    echo "ENV : ${ENV}"
+    echo "REGION : ${REGION}"
+    echo "COLOR : ${COLOR}"
+    echo "Terraform Version : "
+    terraform --version
+    cd terraform/aws
+    make tf_plan ACCOUNT=${ACCOUNT} ENV=${ENV} COLOR=${COLOR} REGION=${REGION}
+
+.deploy_script_destroy_plan: &deploy_script_destroy_plan
+  - |
+    echo "Inside deploy_script_destroy_plan method"
+    ls -altr
+    echo "ACCOUNT : ${ACCOUNT}"
+    echo "ENV : ${ENV}"
+    echo "REGION : ${REGION}"
+    echo "COLOR : ${COLOR}"
+    echo "Terraform Version : "
+    terraform --version
+    cd terraform/aws
+    make tf_destroy_plan ACCOUNT=${ACCOUNT} ENV=${ENV} COLOR=${COLOR} REGION=${REGION}
+
+.deploy_script_apply: &deploy_script_apply
+  - |
+    echo "Inside deploy_script_apply method"
+    ls -altr
+    echo "ACCOUNT : ${ACCOUNT}"
+    echo "ENV : ${ENV}"
+    echo "REGION : ${REGION}"
+    echo "COLOR : ${COLOR}"
+    echo "Terraform Version : "
+    terraform --version
+    cd terraform/aws
+    make apply ACCOUNT=${ACCOUNT} ENV=${ENV} COLOR=${COLOR} REGION=${REGION}
+
+.deploy_script_destroy: &deploy_script_destroy
+  - |
+    echo "Inside deploy_script_destroy method"
+    ls -altr
+    echo "ACCOUNT : ${ACCOUNT}"
+    echo "ENV : ${ENV}"
+    echo "REGION : ${REGION}"
+    echo "COLOR : ${COLOR}"
+    echo "Terraform Version : "
+    terraform --version
+    echo "Destroy Plan"
+    cd terraform/aws
+    make tf_destroy ACCOUNT=${ACCOUNT} ENV=${ENV} COLOR=${COLOR} REGION=${REGION}
+
+.branch_plan_rule: &branch_plan_rule
+  rules:
+    - if: $CI_COMMIT_BRANCH == "master"
+      when: never
+    - when: on_success
+
+.branch_apply_rule: &branch_apply_rule
+  rules:
+    - if: $CI_COMMIT_BRANCH == "master"
+      when: never
+    - if: $CI_MERGE_REQUEST_IID
+      when: never
+    - if: $CI_COMMIT_BRANCH =~ /^release.*$/
+      when: never
+    - when: manual
+    - when: on_success
+
+.prod_branch_apply_rule: &prod_branch_apply_rule
+  only:
+    - /^release.*$/
+    - master
+    - main
+  tags:
+    - svod-prod-docker
+
+include:
+  - template: Security/SAST.gitlab-ci.yml
+  - template: Security/Dependency-Scanning.gitlab-ci.yml
+  - template: Security/Secret-Detection.gitlab-ci.yml
+  - template: Security/SAST-IaC.latest.gitlab-ci.yml
+
+stages:
+  - sast
+  - init
+  - test
+  - non-prod-plan
+  - non-prod-apply-destroy
+  - prod-plan
+  - prod-apply-destroy
+
+sast:
+  stage: sast
+  artifacts:
+    name: sast
+      #paths:
+    # - 'gl-sast-report.json'
+    reports:
+      sast: gl-sast-report.json
+    when: always
+          
+init:
+  stage: init
+  script:
+    - |
+      touch $VARIABLE_FILE
+      echo "VARIABLE_FILE=$VARIABLE_FILE"
+  artifacts:
+    reports:
+      dotenv: $VARIABLE_FILE
+
+non-prod-destroy-plan:
+  <<: *branch_apply_rule
+  stage: non-prod-plan
+  variables:
+    ACCOUNT: svod
+    ENV: nonprod
+    REGION: us-east-1
+    COLOR: blue
+  before_script:
+    - *before_script_deploy
+  script:
+    - *deploy_script_destroy_plan
+  when: manual
+
+non-prod-destroy:
+  <<: *branch_apply_rule
+  stage: non-prod-apply-destroy
+  variables:
+    ACCOUNT: svod
+    ENV: nonprod
+    REGION: us-east-1
+    COLOR: blue
+  before_script:
+    - *before_script_deploy
+  script:
+    - *deploy_script_destroy
+  needs:
+    - init
+    - non-prod-destroy-plan
+  when: manual
+
+# Deploy to PROD env from release or master branch
+prod-apply-plan:
+  <<: *prod_branch_apply_rule
+  stage: prod-plan
+  variables:
+    ACCOUNT: svod
+    ENV: prod
+    REGION: us-east-1
+    COLOR: blue
+  before_script:
+    - *before_script_deploy
+  script:
+    - *deploy_script_plan
+  needs:
+    - init
+  when: manual
+
+prod-apply:
+  <<: *prod_branch_apply_rule
+  stage: prod-apply-destroy
+  variables:
+    ACCOUNT: svod
+    ENV: prod
+    REGION: us-east-1
+    COLOR: blue
+  before_script:
+    - *before_script_deploy
+  script:
+    - *deploy_script_apply
+  needs:
+    - init
+    - prod-apply-plan
+  when: manual
+
+prod-destroy-plan:
+  <<: *prod_branch_apply_rule
+  stage: prod-plan
+  variables:
+    ACCOUNT: svod
+    ENV: prod
+    REGION: us-east-1
+    COLOR: blue
+  before_script:
+    - *before_script_deploy
+  script:
+    - *deploy_script_destroy_plan
+  needs:
+    - init
+  when: manual
+
+prod-destroy:
+  <<: *prod_branch_apply_rule
+  stage: prod-apply-destroy
+  variables:
+    ACCOUNT: svod
+    ENV: prod
+    REGION: us-east-1
+    COLOR: blue
+  before_script:
+    - *before_script_deploy
+  script:
+    - *deploy_script_destroy
+  needs:
+    - init
+    - prod-destroy-plan
+  when: manual
